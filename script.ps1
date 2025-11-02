@@ -1,54 +1,77 @@
 <#
-MS17-010 Lab Prep Script (PS2-safe, Windows 7 x64)
+StagingBlue / MS17-010 Victim Prep
+Windows 7 x64 / PowerShell 2.0
 
-What this script does:
-  1. Verifies environment:
-     - PowerShell 2.x
-     - Running as Administrator (auto-UAC elevate if not)
-     - Windows 7, 64-bit
-  2. Asks operator to continue
-  3. Firewall:
-     - Ensure inbound and outbound TCP 445 allow rules for SMB:
-         "MS17 (Eternal Blue) INBOUND"
-         "MS17 (Eternal Blue) OUTBOUND"
-     - For each of these four rule NAMES:
-         "File and Printer Sharing (Echo Request - ICMPv4-In)"
-         "File and Printer Sharing (Echo Request - ICMPv4-Out)"
-         "File and Printer Sharing (Echo Request - ICMPv6-In)"
-         "File and Printer Sharing (Echo Request - ICMPv6-Out)"
-       • Count how many instances exist (Domain / Private / Public)
-       • Count enabled vs disabled
-       • Enable them if any instance is disabled
-  4. Registry:
-     - Append "samr" to HKLM\SYSTEM\CurrentControlSet\services\LanmanServer\Parameters\NullSessionPipes
-       if it's not already present (REG_MULTI_SZ)
-  5. Print summary
-  6. Offer reboot
+What this does (for lab use only):
+ - Confirms we're on a Windows 7 64-bit box running PowerShell 2.0, and that we are Admin.
+   If not Admin, it UAC re-launches itself with ExecutionPolicy bypass so it can continue.
 
-This intentionally weakens the box for lab exploitation. Do not run on anything real.
+ - Makes the machine easier to hit with MS17-010 style exploits in an isolated lab.
+   It does that by:
+     1. Making sure TCP 445 (SMB) is open both inbound and outbound on all firewall profiles.
+        We create/ensure two rules:
+          "MS17 (Eternal Blue) INBOUND"
+          "MS17 (Eternal Blue) OUTBOUND"
+
+     2. Enabling ONLY the "File and Printer Sharing (Echo Request ...)" rules for ICMPv4/ICMPv6,
+        both inbound and outbound. These are the built-in Windows firewall rules that control ping.
+        We DO NOT touch any other File and Printer Sharing rules.
+        We just make sure the Echo Request rules are enabled across Domain/Private/Public profiles
+        so the target is discoverable/diagnosable in the lab.
+
+        Specifically we operate on these four rule names:
+          - "File and Printer Sharing (Echo Request - ICMPv4-In)"
+          - "File and Printer Sharing (Echo Request - ICMPv4-Out)"
+          - "File and Printer Sharing (Echo Request - ICMPv6-In)"
+          - "File and Printer Sharing (Echo Request - ICMPv6-Out)"
+
+        For each of those names:
+          • Count how many rule instances exist on this box
+            (Windows creates separate per-profile copies)
+          • Count how many are Enabled vs Disabled
+          • If any instance is disabled, we enable that rule name which flips them all on
+
+     3. Updating the registry under:
+        HKLM\SYSTEM\CurrentControlSet\services\LanmanServer\Parameters\NullSessionPipes
+        We make sure "samr" is listed there.
+        That weakens access control to allow anonymous pipe access to SAMR. This is
+        deliberate for staging the host as a soft target during exploitation testing.
+
+        - If "samr" is already there, we do nothing.
+        - If it's missing, we append it without removing what's already there.
+
+ - At the end we print a summary of what happened and offer to reboot.
+   Reboot is recommended so all services pick up the new state.
+
+This script is NOT for production, NOT for internet-connected systems, NOT for use
+on machines you don't fully control. This is purely for controlled lab ranges.
+If you're running this anywhere else, you're doing it wrong.
 #>
 
 Write-Host "======================================================="
-Write-Host "   MS17-010 Lab Prep Tool (Windows 7 x64 / PS2)"
+Write-Host "   StagingBlue :: MS17-010 Victim Prep (Win7 x64 / PS2)"
 Write-Host "======================================================="
 Write-Host ""
 
 #########################################################
-# 0. PowerShell version check
+# Step 0: Check PowerShell version
+# We expect Windows 7 default which is PowerShell 2.x.
+# If it's not PS2, we bail, because later syntax and assumptions are PS2-safe.
 #########################################################
 
-$psMajor = 2
-$psMinor = 0
+$psMajorDetected = 2
+$psMinorDetected = 0
 if ($PSVersionTable -and $PSVersionTable.PSVersion) {
-    $psMajor = $PSVersionTable.PSVersion.Major
-    $psMinor = $PSVersionTable.PSVersion.Minor
+    $psMajorDetected = $PSVersionTable.PSVersion.Major
+    $psMinorDetected = $PSVersionTable.PSVersion.Minor
 }
-$psVersionString = $psMajor.ToString() + "." + $psMinor.ToString()
+$psVersionString = $psMajorDetected.ToString() + "." + $psMinorDetected.ToString()
 
 Write-Host ("INFO: PowerShell version detected: " + $psVersionString)
 
-if ($psMajor -ne 2) {
-    Write-Host "ERROR: This tool targets PowerShell 2.0. Aborting for safety."
+if ($psMajorDetected -ne 2) {
+    Write-Host "ERROR: This tool targets PowerShell 2.0 (Windows 7 default)."
+    Write-Host "ERROR: You're not on PS2, so to avoid breaking anything we stop here."
     Write-Host ""
     Write-Host "Press any key to exit..."
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
@@ -59,64 +82,71 @@ Write-Host "OK: PowerShell 2.x confirmed."
 Write-Host ""
 
 #########################################################
-# 1. UAC / Admin elevation
+# Step 1: Ensure we're running elevated
+# We need admin because we're editing firewall rules + HKLM registry.
+# If we're not admin, we re-launch ourselves with RunAs and ExecutionPolicy Bypass.
 #########################################################
 
 Write-Host "INFO: Checking Administrator privileges..."
 
-$currIdentity    = [Security.Principal.WindowsIdentity]::GetCurrent()
-$currPrincipal   = New-Object Security.Principal.WindowsPrincipal($currIdentity)
-$currUserIsAdmin = $currPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$currentIdentity    = [Security.Principal.WindowsIdentity]::GetCurrent()
+$currentPrincipal   = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
+$currentUserIsAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
-if (-not $currUserIsAdmin) {
-    Write-Host "INFO: Script is NOT running as Administrator. Requesting elevation via UAC..."
-    $scriptPath = $MyInvocation.MyCommand.Path
-    $argList    = "-NoProfile -NoExit -ExecutionPolicy Bypass -File `"$scriptPath`""
+if (-not $currentUserIsAdmin) {
+    Write-Host "INFO: Not running as Administrator."
+    Write-Host "INFO: Re-launching self elevated via UAC (ExecutionPolicy: Bypass)..."
 
-    Start-Process powershell.exe -ArgumentList $argList -Verb RunAs
+    $thisScriptPath = $MyInvocation.MyCommand.Path
+    $elevatedArgs   = "-NoProfile -NoExit -ExecutionPolicy Bypass -File `"$thisScriptPath`""
+
+    Start-Process powershell.exe -ArgumentList $elevatedArgs -Verb RunAs
 
     Write-Host ""
-    Write-Host "INFO: A UAC prompt should appear. After approval, an elevated PowerShell"
-    Write-Host "INFO: window will continue running this script. This non-admin window will now exit."
+    Write-Host "INFO: You should see a UAC prompt. After you accept, a new elevated"
+    Write-Host "INFO: PowerShell window continues the script. This non-admin window exits."
     Write-Host ""
     exit
 }
 
-Write-Host "OK: Administrator privileges confirmed."
+Write-Host "OK: We are running with Administrator rights."
 Write-Host ""
 
 #########################################################
-# 2. OS check (Windows 7 x64 only)
+# Step 2: Confirm OS is Windows 7 x64
+# We only stage Windows 7 64-bit victims here.
 #########################################################
 
 Write-Host "INFO: Collecting OS details..."
 
-$osInfo         = Get-WmiObject -Class Win32_OperatingSystem
-$osCaption      = $osInfo.Caption
-$osVersion      = $osInfo.Version
-$osArchitecture = $osInfo.OSArchitecture
+$osInfoObject   = Get-WmiObject -Class Win32_OperatingSystem
+$osCaption      = $osInfoObject.Caption
+$osVersion      = $osInfoObject.Version
+$osArchitecture = $osInfoObject.OSArchitecture
 
 Write-Host ("    OS Name:        " + $osCaption)
 Write-Host ("    OS Version:     " + $osVersion)
 Write-Host ("    Architecture:   " + $osArchitecture)
 Write-Host ""
 
-$looksLikeWin7   = $false
-$is64bitRequired = $false
+$hostIsWin7   = $false
+$hostIs64Bit  = $false
 
-if ($osCaption -match "Windows 7") { $looksLikeWin7 = $true }
-if ($osArchitecture -match "64")   { $is64bitRequired = $true }
+if ($osCaption -match "Windows 7") { $hostIsWin7  = $true }
+if ($osArchitecture -match "64")   { $hostIs64Bit = $true }
 
-if (-not $looksLikeWin7) {
-    Write-Host "ERROR: Host is not Windows 7. Aborting. No changes made."
+if (-not $hostIsWin7) {
+    Write-Host "ERROR: Host is not Windows 7. StagingBlue only supports Win7 victims."
+    Write-Host "ERROR: No changes were made."
     Write-Host ""
     Write-Host "Press any key to exit..."
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 1
 }
 
-if (-not $is64bitRequired) {
-    Write-Host "ERROR: Host is not 64-bit. Aborting. No changes made."
+if (-not $hostIs64Bit) {
+    Write-Host "ERROR: Host is not 64-bit Windows 7."
+    Write-Host "ERROR: No changes were made."
     Write-Host ""
     Write-Host "Press any key to exit..."
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
@@ -127,28 +157,27 @@ Write-Host "OK: Windows 7 64-bit confirmed."
 Write-Host ""
 
 #########################################################
-# 3. Operator confirmation
+# Step 3: Ask operator for confirmation
+# Be loud about impact so we don't brick random laptops by accident.
 #########################################################
 
-Write-Host "Planned actions:"
-Write-Host " - Ensure SMB 445 allow rules:"
+Write-Host "This will modify the current machine for exploitation testing:"
+Write-Host " - Open SMB (TCP 445) both inbound and outbound using custom rules:"
 Write-Host "     MS17 (Eternal Blue) INBOUND"
 Write-Host "     MS17 (Eternal Blue) OUTBOUND"
-Write-Host " - Check and (if needed) enable these 4 firewall rule names:"
-Write-Host "     File and Printer Sharing (Echo Request - ICMPv4-In)"
-Write-Host "     File and Printer Sharing (Echo Request - ICMPv4-Out)"
-Write-Host "     File and Printer Sharing (Echo Request - ICMPv6-In)"
-Write-Host "     File and Printer Sharing (Echo Request - ICMPv6-Out)"
-Write-Host "   We'll report per rule name: instances, enabled count, disabled count."
-Write-Host " - Add 'samr' to NullSessionPipes if missing"
+Write-Host " - Make sure ping Echo Request rules (ICMPv4 / ICMPv6, In / Out)"
+Write-Host "   are enabled in Windows Firewall so the host is discoverable."
+Write-Host "   Only those four built-in Echo Request rules are touched."
+Write-Host " - Add 'samr' to NullSessionPipes in HKLM so anonymous pipe"
+Write-Host "   access is easier for testing."
 Write-Host ""
-Write-Host "WARNING: This intentionally weakens the machine for lab exploitation."
+Write-Host "This weakens the box on purpose. Only run this in an isolated lab segment."
 Write-Host ""
 
-$answer = Read-Host "Type Y to continue, anything else to cancel"
-if ($answer -notmatch '^[Yy]') {
+$continueAnswer = Read-Host "Type Y to continue, anything else to cancel"
+if ($continueAnswer -notmatch '^[Yy]') {
     Write-Host ""
-    Write-Host "CANCELLED: User chose not to continue. No changes made."
+    Write-Host "CANCELLED: You chose not to continue. Nothing was changed."
     Write-Host ""
     Write-Host "Press any key to exit..."
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
@@ -156,433 +185,463 @@ if ($answer -notmatch '^[Yy]') {
 }
 
 Write-Host ""
-Write-Host "OK: Proceeding..."
+Write-Host "Proceeding with StagingBlue victim setup..."
 Write-Host ""
 
 #########################################################
-# 4. Ensure SMB inbound/outbound TCP 445 rules exist
+# Step 4: Ensure SMB (TCP 445) rules exist
+# We want guaranteed inbound/outbound SMB so the exploit path is reachable.
+# We'll create rules if they're missing, otherwise leave them alone.
 #########################################################
 
-$ruleInName  = "MS17 (Eternal Blue) INBOUND"
-$ruleOutName = "MS17 (Eternal Blue) OUTBOUND"
-$ruleDesc    = "Allow SMB (TCP 445) for MS17-010 lab testing. Use only in a controlled environment. Author not responsible for misuse."
+$inboundRuleName   = "MS17 (Eternal Blue) INBOUND"
+$outboundRuleName  = "MS17 (Eternal Blue) OUTBOUND"
+$stagingRuleDesc   = "Allow SMB (TCP 445) for MS17-010 style lab testing. Isolated environment only."
 
-Write-Host "INFO: Checking inbound SMB rule: " + $ruleInName
-$chkIn = netsh advfirewall firewall show rule name="$ruleInName"
-$inExists = $true
-if ($chkIn -match "No rules match the specified criteria.") {
-    $inExists = $false
+Write-Host "INFO: Checking inbound SMB firewall rule: $inboundRuleName"
+$inboundRuleQueryResult = netsh advfirewall firewall show rule name="$inboundRuleName"
+$inboundRuleExists = $true
+if ($inboundRuleQueryResult -match "No rules match the specified criteria.") {
+    $inboundRuleExists = $false
 }
 
-if ($inExists) {
+if ($inboundRuleExists) {
     Write-Host "NOTE: Inbound SMB rule already exists."
 } else {
     Write-Host "ACTION: Creating inbound SMB rule (TCP 445 allow, all profiles)..."
     netsh advfirewall firewall add rule `
-        name="$ruleInName" `
+        name="$inboundRuleName" `
         dir=in `
         action=allow `
         protocol=TCP `
         localport=445 `
         profile=any `
         enable=yes `
-        description="$ruleDesc" | Out-Null
+        description="$stagingRuleDesc" | Out-Null
     Write-Host "OK: Inbound SMB rule created."
 }
 
 Write-Host ""
-Write-Host "INFO: Checking outbound SMB rule: " + $ruleOutName
-$chkOut = netsh advfirewall firewall show rule name="$ruleOutName"
-$outExists = $true
-if ($chkOut -match "No rules match the specified criteria.") {
-    $outExists = $false
+Write-Host "INFO: Checking outbound SMB firewall rule: $outboundRuleName"
+$outboundRuleQueryResult = netsh advfirewall firewall show rule name="$outboundRuleName"
+$outboundRuleExists = $true
+if ($outboundRuleQueryResult -match "No rules match the specified criteria.") {
+    $outboundRuleExists = $false
 }
 
-if ($outExists) {
+if ($outboundRuleExists) {
     Write-Host "NOTE: Outbound SMB rule already exists."
 } else {
     Write-Host "ACTION: Creating outbound SMB rule (TCP 445 allow, all profiles)..."
     netsh advfirewall firewall add rule `
-        name="$ruleOutName" `
+        name="$outboundRuleName" `
         dir=out `
         action=allow `
         protocol=TCP `
         localport=445 `
         profile=any `
         enable=yes `
-        description="$ruleDesc" | Out-Null
+        description="$stagingRuleDesc" | Out-Null
     Write-Host "OK: Outbound SMB rule created."
 }
 
 Write-Host ""
 
 #########################################################
-# 5. Echo Request firewall rules (ICMPv4/v6 In/Out)
+# Step 5: Enable ping Echo Request rules for IPv4/IPv6, In/Out
+#
+# Windows creates multiple copies of these rules (Domain / Private / Public
+# profiles). We don't create new firewall rules here. We only locate the four
+# rule names below, count how many copies exist, count enabled/disabled,
+# and if any are disabled we enable that rule name via netsh.
+#
+# This only touches Echo Request rules. We do NOT touch other File and Printer
+# Sharing rules (like actual file sharing). We just want ping to work both ways.
 #########################################################
 
-Write-Host "INFO: Auditing and enabling Echo Request rules (ICMPv4 & ICMPv6, In & Out)..."
-Write-Host "INFO: This affects only the specific rule names below. Nothing else."
+Write-Host "INFO: Auditing and enabling Echo Request rules (ICMPv4 & ICMPv6, inbound & outbound)..."
+Write-Host "INFO: Only these four built-in rule names are touched. Nothing else."
 Write-Host ""
 
-# These are the only firewall rule names we care about.
-$targetEchoRules = @(
+$echoTargetRuleNames = @(
     "File and Printer Sharing (Echo Request - ICMPv4-In)",
     "File and Printer Sharing (Echo Request - ICMPv4-Out)",
     "File and Printer Sharing (Echo Request - ICMPv6-In)",
     "File and Printer Sharing (Echo Request - ICMPv6-Out)"
 )
 
-# Dump firewall rules to a temp file once
-$tmpFile = $env:TEMP + "\netsh_rules_dump.txt"
-if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force }
-netsh advfirewall firewall show rule name=all > "$tmpFile"
-$allLines = Get-Content "$tmpFile"
+# Pull the full firewall rule dump to a temp file once so we can parse locally.
+$tempFirewallDumpPath = $env:TEMP + "\stagingblue_firewall_dump.txt"
+if (Test-Path $tempFirewallDumpPath) { Remove-Item $tempFirewallDumpPath -Force }
+netsh advfirewall firewall show rule name=all > "$tempFirewallDumpPath"
+$firewallDumpLines = Get-Content "$tempFirewallDumpPath"
 
-# Build $blocks as an array of "rule blocks".
-# Each $block is itself an array of lines.
-# We must be careful to append using ,$block so PowerShell 2 does not flatten it.
+# We'll break that dump into rule "blocks".
+# Each block will be an array of lines describing a single firewall rule instance.
+# We have to be careful in PS2 so we don't accidentally flatten arrays.
+$ruleBlocks            = @()
+$currentRuleBlock      = @()
+$currentRuleBlockValid = $false
 
-$blocks = @()
-$currentBlock = @()
-$haveCurrentBlock = $false
+foreach ($lineRaw in $firewallDumpLines) {
 
-foreach ($rawLine in $allLines) {
-
-    $t = $rawLine.Trim()
-    if ($t -eq "") {
+    $lineTrimmed = $lineRaw.Trim()
+    if ($lineTrimmed -eq "") {
         continue
     }
 
-    $lower = $t.ToLower()
+    $lineLower = $lineTrimmed.ToLower()
 
-    if ($lower.StartsWith("rule name")) {
-        # starting a new block
-        if ($haveCurrentBlock -eq $true) {
-            # push the previous block
-            $blocks += ,@($currentBlock)
+    if ($lineLower.StartsWith("rule name")) {
+        # This is the start of a new rule block.
+        # If we were already collecting a previous block, push it first.
+        if ($currentRuleBlockValid -eq $true) {
+            $ruleBlocks += ,@($currentRuleBlock)
         }
-        # start a fresh block
-        $currentBlock = @()
-        $currentBlock += $t
-        $haveCurrentBlock = $true
+
+        # Start a new block with this line.
+        $currentRuleBlock      = @()
+        $currentRuleBlock     += $lineTrimmed
+        $currentRuleBlockValid = $true
     } else {
-        if ($haveCurrentBlock -eq $true) {
-            $currentBlock += $t
+        if ($currentRuleBlockValid -eq $true) {
+            $currentRuleBlock += $lineTrimmed
         }
     }
 }
 
-# after the loop, flush the last block
-if ($haveCurrentBlock -eq $true) {
-    $blocks += ,@($currentBlock)
+# Flush last collected block.
+if ($currentRuleBlockValid -eq $true) {
+    $ruleBlocks += ,@($currentRuleBlock)
 }
 
-# We'll collect per-rule-name status so we can summarize and then act.
-$echoReport = @()  # array of objects: Name / TotalInstances / EnabledCount / DisabledCount
+# We’ll build a report for each of the 4 rule names:
+#   - how many instances exist
+#   - how many are enabled
+#   - how many are disabled
+$echoRuleReport = @()
 
-foreach ($targetName in $targetEchoRules) {
+foreach ($targetRuleName in $echoTargetRuleNames) {
 
-    $totalInst      = 0
-    $enabledCount   = 0
-    $disabledCount  = 0
+    $totalInstancesForName    = 0
+    $enabledInstancesForName  = 0
+    $disabledInstancesForName = 0
 
-    foreach ($blk in $blocks) {
+    foreach ($block in $ruleBlocks) {
 
-        # The first line of each block should look like:
-        # "Rule Name: <actual rule name>"
-        $firstLine = $blk[0]
-        $parts = $firstLine.Split(":", 2)
-        if ($parts.Length -lt 2) { continue }
+        # First line in block should be "Rule Name: <actual name>"
+        $firstLineOfBlock = $block[0]
+        $partsSplit       = $firstLineOfBlock.Split(":", 2)
+        if ($partsSplit.Length -lt 2) { continue }
 
-        $ruleDisplayName = $parts[1].Trim()
+        $thisBlockRuleName = $partsSplit[1].Trim()
 
-        if ($ruleDisplayName -eq $targetName) {
+        if ($thisBlockRuleName -eq $targetRuleName) {
 
-            $totalInst = $totalInst + 1
+            $totalInstancesForName = $totalInstancesForName + 1
 
-            # default assume disabled unless we see "Enabled: Yes"
-            $isEnabledHere = $false
-            foreach ($ln in $blk) {
-                $lnLower = $ln.ToLower()
-                if ($lnLower.StartsWith("enabled")) {
-                    $p2 = $ln.Split(":", 2)
-                    if ($p2.Length -ge 2) {
-                        $val = $p2[1].Trim().ToLower()
-                        if ($val -eq "yes") {
-                            $isEnabledHere = $true
+            # Default assume disabled unless we read "Enabled: Yes"
+            $thisInstanceEnabled = $false
+            foreach ($blockLine in $block) {
+                $blockLineLower = $blockLine.ToLower()
+                if ($blockLineLower.StartsWith("enabled")) {
+                    $enabledSplit = $blockLine.Split(":", 2)
+                    if ($enabledSplit.Length -ge 2) {
+                        $enabledValue = $enabledSplit[1].Trim().ToLower()
+                        if ($enabledValue -eq "yes") {
+                            $thisInstanceEnabled = $true
                         }
                     }
                     break
                 }
             }
 
-            if ($isEnabledHere) {
-                $enabledCount  = $enabledCount + 1
+            if ($thisInstanceEnabled) {
+                $enabledInstancesForName  = $enabledInstancesForName  + 1
             } else {
-                $disabledCount = $disabledCount + 1
+                $disabledInstancesForName = $disabledInstancesForName + 1
             }
         }
     }
 
-    # record this target's status
-    $obj = New-Object PSObject
-    $obj | Add-Member NoteProperty Name           $targetName
-    $obj | Add-Member NoteProperty TotalInstances $totalInst
-    $obj | Add-Member NoteProperty EnabledCount   $enabledCount
-    $obj | Add-Member NoteProperty DisabledCount  $disabledCount
-    $echoReport += $obj
+    # Store the counts for summary and next step.
+    $ruleStatusObject = New-Object PSObject
+    $ruleStatusObject | Add-Member NoteProperty Name                  $targetRuleName
+    $ruleStatusObject | Add-Member NoteProperty TotalInstances        $totalInstancesForName
+    $ruleStatusObject | Add-Member NoteProperty EnabledCount          $enabledInstancesForName
+    $ruleStatusObject | Add-Member NoteProperty DisabledCount         $disabledInstancesForName
+    $echoRuleReport   += $ruleStatusObject
 
-    # tell the user what we saw for this name
-    if ($totalInst -eq 0) {
-        Write-Host ("NOTE: " + $targetName + " -> no instances found on this system.")
+    # Live output so the operator sees what state the box was in before changes.
+    if ($totalInstancesForName -eq 0) {
+        Write-Host ("NOTE: " + $targetRuleName + " -> no instances found on this system.")
     } else {
-        Write-Host ("NOTE: " + $targetName + " -> " +
-            $totalInst.ToString() + " instance(s) found. Enabled: " +
-            $enabledCount.ToString() + "  Disabled: " +
-            $disabledCount.ToString())
+        Write-Host ("NOTE: " + $targetRuleName + " -> " +
+            $totalInstancesForName.ToString() + " instance(s) found. Enabled: " +
+            $enabledInstancesForName.ToString() + "  Disabled: " +
+            $disabledInstancesForName.ToString())
     }
 }
 
-# Now actually enable where needed.
-$echoEnabledNow = 0
-$echoAlreadyOK  = 0
-$echoMissing    = 0
+# For each of the 4 target rule names:
+#   If any instance is disabled, we run netsh "set rule ... enable=yes" ONCE for that rule name.
+#   That flips all the profiles for that rule to enabled.
+$echoRuleNamesWeChanged   = 0
+$echoRuleNamesAlreadyGood = 0
+$echoRuleNamesMissing     = 0
 
-foreach ($rep in $echoReport) {
-    $tName         = $rep.Name
-    $tTotal        = $rep.TotalInstances
-    $tDisabled     = $rep.DisabledCount
+foreach ($ruleStatus in $echoRuleReport) {
+    $ruleNameThis = $ruleStatus.Name
+    $instances    = $ruleStatus.TotalInstances
+    $disabledCnt  = $ruleStatus.DisabledCount
 
-    if ($tTotal -eq 0) {
-        # rule name not present on this system
-        $echoMissing = $echoMissing + 1
+    if ($instances -eq 0) {
+        # no such rule on this box
+        $echoRuleNamesMissing = $echoRuleNamesMissing + 1
         continue
     }
 
-    if ($tDisabled -eq 0) {
-        # all instances already on
-        Write-Host ("SKIP: All instances already enabled for -> " + $tName)
-        $echoAlreadyOK = $echoAlreadyOK + 1
+    if ($disabledCnt -eq 0) {
+        # All copies already enabled
+        Write-Host ("SKIP: All instances already enabled for -> " + $ruleNameThis)
+        $echoRuleNamesAlreadyGood = $echoRuleNamesAlreadyGood + 1
         continue
     }
 
-    Write-Host ("ACTION: Enabling rule name -> " + $tName + " (this turns ON all profile instances with that name)")
-    $safeName = $tName.Replace('"', "'")
-    $cmd = 'netsh advfirewall firewall set rule name="' + $safeName + '" new enable=yes'
+    # Some copies were disabled. We'll enable the whole rule name.
+    Write-Host ("ACTION: Enabling -> " + $ruleNameThis + " (enables all profile copies)")
+    $safeDisplayName = $ruleNameThis.Replace('"', "'")
+    $enableCmd       = 'netsh advfirewall firewall set rule name="' + $safeDisplayName + '" new enable=yes'
     try {
-        iex $cmd
-        Write-Host ("OK: Enabled -> " + $tName)
-        $echoEnabledNow = $echoEnabledNow + 1
+        Invoke-Expression $enableCmd
+        Write-Host ("OK: Enabled -> " + $ruleNameThis)
+        $echoRuleNamesWeChanged = $echoRuleNamesWeChanged + 1
     } catch {
-        Write-Host ("ERROR: Failed to enable -> " + $tName)
+        Write-Host ("ERROR: Failed to enable -> " + $ruleNameThis)
     }
 }
 
-# cleanup temp firewall dump file
-if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force }
+# firewall dump we created is no longer needed
+if (Test-Path $tempFirewallDumpPath) { Remove-Item $tempFirewallDumpPath -Force }
 
 Write-Host ""
-Write-Host "INFO: Firewall echo rule step complete."
+Write-Host "INFO: Echo Request firewall step complete."
 Write-Host ""
 
 #########################################################
-# 6. Registry: add 'samr' into NullSessionPipes (Reporting first)
+# Step 6: Registry prep (NullSessionPipes -> add 'samr')
+#
+# The idea:
+#   HKLM\SYSTEM\CurrentControlSet\services\LanmanServer\Parameters\NullSessionPipes
+# is a REG_MULTI_SZ. Adding "samr" there weakens access control so anonymous
+# sessions can talk to the SAMR pipe. That helps during exploit / post-exploit
+# enumeration in lab conditions.
+#
+# We DO NOT wipe whatever's already in there.
+# We:
+#   1. Read current entries (if any).
+#   2. If "samr" is already present -> do nothing.
+#   3. Otherwise write a new REG_MULTI_SZ that includes previous entries + "samr".
+#
+# We use reg.exe instead of direct .NET registry APIs here. On Win7,
+# this makes sure we're hitting the correct 64-bit HKLM hive and writing
+# REG_MULTI_SZ in a way regedit will show properly.
 #########################################################
 
-Write-Host "INFO: Checking registry for NullSessionPipes 'samr' entry..."
+Write-Host "INFO: Preparing registry (NullSessionPipes -> include 'samr' if missing)..."
 Write-Host "     HKLM\\SYSTEM\\CurrentControlSet\\services\\LanmanServer\\Parameters\\NullSessionPipes"
 Write-Host ""
 
-# We'll use reg.exe so we hit the real 64-bit hive and set proper REG_MULTI_SZ.
+$registryLanmanPath    = "HKLM\SYSTEM\CurrentControlSet\services\LanmanServer\Parameters"
+$registryValueName     = "NullSessionPipes"
+$pipeWeNeed            = "samr"
 
-$regPathFull = "HKLM\SYSTEM\CurrentControlSet\services\LanmanServer\Parameters"
-$regValueName = "NullSessionPipes"
-$mustInclude  = "samr"
+$currentPipesOnSystem  = @()
+$registryAlreadyHadSamr = $false
+$registryWriteWorked    = $false
+$registryWeAddedSamr    = $false
 
-# Step 1: read current value (if any)
-# reg query will exit non-zero if value doesn't exist, so we wrap in try/catch
+# Query current state
+$rawRegistryQuery = cmd /c "reg query `"$registryLanmanPath`" /v $registryValueName 2>&1"
 
-$currentEntries = @()
-$regHadSamr     = $false
-$regWorked      = $false
-$regAddedSamr   = $false
-
-# query:
-$rawQuery = cmd /c "reg query `"$regPathFull`" /v $regValueName 2>&1"
-
-# $rawQuery will be array of lines. If it contains "ERROR:" then value doesn't exist.
-$nullSessionExists = $true
-foreach ($l in $rawQuery) {
-    if ($l -match "ERROR:") {
-        $nullSessionExists = $false
+# If reg query prints "ERROR:" then the value doesn't exist yet.
+$nullSessionPipesExists = $true
+foreach ($regLine in $rawRegistryQuery) {
+    if ($regLine -match "ERROR:") {
+        $nullSessionPipesExists = $false
     }
 }
 
-if ($nullSessionExists -eq $true) {
-    # Parse the reg query output to extract the data portion.
-    # Typical line looks like:
-    #     NullSessionPipes    REG_MULTI_SZ    samr\0whatever\0...
-    #
-    # We'll look for a line containing our value name and REG_MULTI_SZ
-    foreach ($l in $rawQuery) {
-        $triml = $l.Trim()
-        if ($triml -match "^$regValueName") {
-            # split on whitespace but only first 2 gaps are name/type, rest is data
-            # PowerShell 2 doesn't have -split with maxcount param in older syntax,
-            # so we'll do manual.
-            # We'll try splitting on multiple spaces.
-            $pieces = $triml -split "\s{2,}"
-            # Expect: [0]=NullSessionPipes [1]=REG_MULTI_SZ [2]=data... (may include spaces joined by \0)
+if ($nullSessionPipesExists -eq $true) {
+    # Parse output lines to get existing REG_MULTI_SZ data.
+    # Expect something like:
+    #   NullSessionPipes    REG_MULTI_SZ    samr\0whatever\0...
+    foreach ($regLine in $rawRegistryQuery) {
+        $lineTrim = $regLine.Trim()
+        if ($lineTrim -match "^$registryValueName") {
+
+            # Split by large gaps of spaces.
+            $pieces = $lineTrim -split "\s{2,}"
+
+            # pieces[0] = NullSessionPipes
+            # pieces[1] = REG_MULTI_SZ
+            # pieces[2] = data (backslash-zero separated)
+
             if ($pieces.Length -ge 3) {
                 $dataJoined = $pieces[2]
-                # REG_MULTI_SZ formats entries separated by \0
-                $currentEntries = $dataJoined -split "\\0"
+                $currentPipesOnSystem = $dataJoined -split "\\0"
             }
         }
     }
 } else {
-    Write-Host "NOTE: NullSessionPipes does not currently exist or is empty."
+    Write-Host "NOTE: NullSessionPipes is not defined yet (no entries)."
 }
 
-# Clean current entries (remove empty strings)
-$cleaned = @()
-foreach ($e in $currentEntries) {
-    if ($e -ne $null -and $e.Trim() -ne "") {
-        $cleaned += $e.Trim()
+# Remove blanks, normalize
+$cleanedList = @()
+foreach ($entry in $currentPipesOnSystem) {
+    if ($null -ne $entry -and $entry.Trim() -ne "") {
+        $cleanedList += $entry.Trim()
     }
 }
-$currentEntries = $cleaned
+$currentPipesOnSystem = $cleanedList
 
-# Report what we found
-if ($currentEntries.Count -eq 0) {
+# Show operator what's currently allowed
+if ($currentPipesOnSystem.Count -eq 0) {
     Write-Host "Current NullSessionPipes entries: (none)"
 } else {
     Write-Host "Current NullSessionPipes entries:"
-    foreach ($c in $currentEntries) {
-        Write-Host ("  - " + $c)
+    foreach ($pipeEntry in $currentPipesOnSystem) {
+        Write-Host ("  - " + $pipeEntry)
     }
 }
 
-# Check if samr is already present (case-insensitive)
-foreach ($c in $currentEntries) {
-    if ($c.ToLower() -eq $mustInclude.ToLower()) {
-        $regHadSamr = $true
+# Check if "samr" already in list (case-insensitive)
+foreach ($pipeEntry in $currentPipesOnSystem) {
+    if ($pipeEntry.ToLower() -eq $pipeWeNeed.ToLower()) {
+        $registryAlreadyHadSamr = $true
     }
 }
 
-if ($regHadSamr) {
-    Write-Host "SKIP: 'samr' already present. Registry unchanged."
-    $regWorked = $true
-    $regAddedSamr = $false
+if ($registryAlreadyHadSamr) {
+    Write-Host "SKIP: 'samr' already present. Registry not modified."
+    $registryWriteWorked = $true
+    $registryWeAddedSamr = $false
 } else {
     Write-Host "ACTION: Adding 'samr' to NullSessionPipes..."
 
-    # Build new list
-    $newList = @()
-    foreach ($c in $currentEntries) { $newList += $c }
-    $newList += $mustInclude
+    # Build the new full list of pipes we want to persist
+    $updatedPipeList = @()
+    foreach ($pipeEntry in $currentPipesOnSystem) { $updatedPipeList += $pipeEntry }
+    $updatedPipeList += $pipeWeNeed
 
-    # We need to feed REG_MULTI_SZ to reg add like: "val1\0val2\0val3\0"
-    # We'll join with \0 and ensure trailing \0
-    $multiBody = ""
-    for ($i=0; $i -lt $newList.Count; $i++) {
+    # REG_MULTI_SZ needs "\0" separation and a trailing "\0".
+    $regMultiString = ""
+    for ($i = 0; $i -lt $updatedPipeList.Count; $i++) {
         if ($i -gt 0) {
-            $multiBody = $multiBody + "\0"
+            $regMultiString = $regMultiString + "\0"
         }
-        $multiBody = $multiBody + $newList[$i]
+        $regMultiString = $regMultiString + $updatedPipeList[$i]
     }
-    $multiBody = $multiBody + "\0"
+    $regMultiString = $regMultiString + "\0"
 
-    # Now write it
-    # /f to force overwrite without interactive prompt
-    $cmdline = "reg add `"$regPathFull`" /v $regValueName /t REG_MULTI_SZ /d `"$multiBody`" /f"
-    $result = cmd /c $cmdline
+    # Write the updated REG_MULTI_SZ using reg.exe
+    $regAddCommand = "reg add `"$registryLanmanPath`" /v $registryValueName /t REG_MULTI_SZ /d `"$regMultiString`" /f"
+    $regAddOutput  = cmd /c $regAddCommand
 
-    # naive success check: look for "The operation completed successfully."
-    $writeOK = $false
-    foreach ($rline in $result) {
-        if ($rline -match "successfully") { $writeOK = $true }
+    # crude success check: look for "The operation completed successfully."
+    $writeLookedOK = $false
+    foreach ($outLine in $regAddOutput) {
+        if ($outLine -match "successfully") { $writeLookedOK = $true }
     }
 
-    if ($writeOK) {
-        Write-Host "OK: 'samr' added to NullSessionPipes."
-        $regWorked = $true
-        $regAddedSamr = $true
+    if ($writeLookedOK) {
+        Write-Host "OK: 'samr' appended to NullSessionPipes."
+        $registryWriteWorked = $true
+        $registryWeAddedSamr = $true
     } else {
-        Write-Host "ERROR: Registry write attempt did not confirm success."
-        $regWorked = $false
-        $regAddedSamr = $false
+        Write-Host "ERROR: Registry write did not confirm success."
+        $registryWriteWorked = $false
+        $registryWeAddedSamr = $false
     }
 }
 
 Write-Host ""
-Write-Host "INFO: Registry step complete."
+Write-Host "Registry prep complete."
 Write-Host ""
 
 #########################################################
-# 7. Final summary
+# Step 7: Final summary for operator
+# We print everything we did, because you'll screenshot this
+# for documentation / coursework.
 #########################################################
 
-# figure out status strings for SMB rules without inline if/else in expressions
-$inRuleStatus  = ""
-$outRuleStatus = ""
-if ($inExists)  { $inRuleStatus  = "(pre-existing)" } else { $inRuleStatus  = "(created now)" }
-if ($outExists) { $outRuleStatus = "(pre-existing)" } else { $outRuleStatus = "(created now)" }
+# Build nicer readable status for SMB rules
+$inboundRuleStatus  = ""
+$outboundRuleStatus = ""
+if ($inboundRuleExists)  { $inboundRuleStatus  = "(pre-existing)" } else { $inboundRuleStatus  = "(created now)" }
+if ($outboundRuleExists) { $outboundRuleStatus = "(pre-existing)" } else { $outboundRuleStatus = "(created now)" }
 
-Write-Host "==================== FINAL SUMMARY ===================="
+Write-Host "==================== STAGINGBLUE SUMMARY ===================="
 Write-Host ("PowerShell version : " + $psVersionString)
 Write-Host ("OS Name            : " + $osCaption)
 Write-Host ("OS Version         : " + $osVersion)
 Write-Host ("Architecture       : " + $osArchitecture)
 Write-Host ""
-Write-Host ("SMB inbound rule   : " + $ruleInName  + "  " + $inRuleStatus)
-Write-Host ("SMB outbound rule  : " + $ruleOutName + "  " + $outRuleStatus)
+Write-Host ("SMB inbound rule   : " + $inboundRuleName  + "  " + $inboundRuleStatus)
+Write-Host ("SMB outbound rule  : " + $outboundRuleName + "  " + $outboundRuleStatus)
 Write-Host ""
 Write-Host "Echo Request rule targets processed (4 total):"
-foreach ($rep in $echoReport) {
-    $lineMsg  = "  - " + $rep.Name
-    $lineMsg += " | Instances: " + $rep.TotalInstances.ToString()
-    $lineMsg += " | Enabled: "   + $rep.EnabledCount.ToString()
-    $lineMsg += " | Disabled: "  + $rep.DisabledCount.ToString()
-    Write-Host $lineMsg
+foreach ($ruleStatus in $echoRuleReport) {
+    $summaryLine  = "  - " + $ruleStatus.Name
+    $summaryLine += " | Instances: " + $ruleStatus.TotalInstances.ToString()
+    $summaryLine += " | Enabled: "   + $ruleStatus.EnabledCount.ToString()
+    $summaryLine += " | Disabled: "  + $ruleStatus.DisabledCount.ToString()
+    Write-Host $summaryLine
 }
 Write-Host ""
-Write-Host ("Echo rule names where action was taken : " + $echoEnabledNow.ToString())
-Write-Host ("Echo rule names already fully enabled : " + $echoAlreadyOK.ToString())
-Write-Host ("Echo rule names missing on system     : " + $echoMissing.ToString())
+Write-Host ("Echo rule names we had to touch     : " + $echoRuleNamesWeChanged.ToString())
+Write-Host ("Echo rule names already good        : " + $echoRuleNamesAlreadyGood.ToString())
+Write-Host ("Echo rule names missing on this box : " + $echoRuleNamesMissing.ToString())
 Write-Host ""
-if ($regWorked) {
-    if ($regHadSamr) {
+if ($registryWriteWorked) {
+    if ($registryAlreadyHadSamr) {
         Write-Host "Registry NullSessionPipes: 'samr' was already present (no change)."
     } else {
-        if ($regAddedSamr) {
-            Write-Host "Registry NullSessionPipes: 'samr' has been ADDED."
+        if ($registryWeAddedSamr) {
+            Write-Host "Registry NullSessionPipes: 'samr' was added."
         } else {
-            Write-Host "Registry NullSessionPipes: attempted to add 'samr' but write failed."
+            Write-Host "Registry NullSessionPipes: tried to add 'samr' but write failed."
         }
     }
 } else {
     Write-Host "Registry NullSessionPipes: could not be modified."
 }
 Write-Host ""
-Write-Host "WARNING: SMB (TCP 445) now allowed in/out, ping echo allowed (ICMPv4/v6 in+out),"
-Write-Host "WARNING: and NullSessionPipes may now include 'samr'."
-Write-Host "WARNING: This box is intentionally weakened for isolated lab exploitation only."
-Write-Host "======================================================="
+Write-Host "WARNING:"
+Write-Host " - SMB (TCP 445) is now allowed inbound and outbound on all profiles."
+Write-Host " - Ping echo (ICMPv4 + ICMPv6, inbound + outbound) is enabled so the target is easy to find."
+Write-Host " - NullSessionPipes now includes 'samr' or was confirmed to already include it."
+Write-Host ""
+Write-Host "This host is now staged as a soft victim for MS17-010 style testing."
+Write-Host "Do not connect this VM to anything you don't fully own and control."
+Write-Host "=============================================================="
 Write-Host ""
 
 #########################################################
-# 8. Offer reboot
+# Step 8: Offer reboot
+# Reboot is recommended because some changes (especially LanmanServer behavior)
+# won't fully apply until services restart.
 #########################################################
 
-$rebootAns = Read-Host "Reboot now to apply everything cleanly? (Y/N)"
-if ($rebootAns -match '^[Yy]') {
-    Write-Host "INFO: Rebooting..."
+$rebootAnswer = Read-Host "Reboot now to lock in changes? (Y/N)"
+if ($rebootAnswer -match '^[Yy]') {
+    Write-Host "INFO: Rebooting now..."
     shutdown /r /t 0
     exit 0
 }
 
-Write-Host "INFO: Reboot skipped. Some changes fully apply after restart."
+Write-Host "INFO: Reboot skipped. Manual reboot later is recommended."
 Write-Host ""
 Write-Host "Press any key to exit..."
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
