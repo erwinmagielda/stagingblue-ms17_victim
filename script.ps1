@@ -1,30 +1,21 @@
 <#
-StagingBlue :: MS17-010 Victim Prep (Win7 x64 / PowerShell 2.0)
-- Adds SMB allow rules, enables ping echo rules, appends 'samr' to NullSessionPipes
-- Prints a summary and ipconfig /all
-- Self-deletes when provided its own temp path as the first argument
-- Colors:
-    Info  = White
-    OK    = Green
-    Fail  = Red
-    Prompt= Yellow
+StagingBlue 1.0 :: MS17-010 Victim Prep (Win7 x64 / PowerShell 2.0)
+- Colors used instead of textual prefixes.
+- Completed/major actions = MAGENTA (ALL CAPS)
+- Notes = CYAN (teal)
+- IPv4 highlighted in YELLOW (closest to orange available in PS2)
+- Prints only requested network fields at the end
 #>
 
 # ---------------------------
-# Small color helpers (PS2 safe)
+# Colour Helpers
 # ---------------------------
-function Write-Info([string]$text) {
-    Write-Host $text -ForegroundColor White
-}
-function Write-Success([string]$text) {
-    Write-Host $text -ForegroundColor Green
-}
-function Write-Failure([string]$text) {
-    Write-Host $text -ForegroundColor Red
-}
-function Write-Prompt([string]$text) {
-    Write-Host $text -ForegroundColor Yellow
-}
+function WriteWhite([string]$t)   { Write-Host $t -ForegroundColor White }
+function WriteGood([string]$t)    { Write-Host $t -ForegroundColor Green }
+function WriteBad([string]$t)     { Write-Host $t -ForegroundColor Red }
+function WritePrompt([string]$t)  { Write-Host $t -ForegroundColor Yellow }
+function WriteDone([string]$t)    { Write-Host $t -ForegroundColor Magenta }  # "pink"
+function WriteNote([string]$t)    { Write-Host $t -ForegroundColor Cyan }     # "teal"
 
 # Accept optional self-path argument (so the script can delete itself).
 $stagingBlueSelfPath = $null
@@ -32,13 +23,13 @@ if ($args.Length -ge 1) {
     $stagingBlueSelfPath = $args[0]
 }
 
-Write-Info "======================================================="
-Write-Info "   StagingBlue :: MS17-010 Victim Prep (Win7 x64 / PS2)"
-Write-Info "======================================================="
-Write-Info ""
+WriteWhite "======================================================"
+WriteWhite " StagingBlue :: MS17-010 Victim Prep (Win7 x64 / PS2) "
+WriteWhite "======================================================"
+WriteWhite ""
 
 # ---------------------------
-# Step 0: PowerShell version check
+# STEP 1: POWERSHELL CHECK
 # ---------------------------
 $psMajorDetected = 2
 $psMinorDetected = 0
@@ -47,154 +38,117 @@ if ($PSVersionTable -and $PSVersionTable.PSVersion) {
     $psMinorDetected = $PSVersionTable.PSVersion.Minor
 }
 $psVersionString = $psMajorDetected.ToString() + "." + $psMinorDetected.ToString()
-
-Write-Info ("INFO: PowerShell version detected: " + $psVersionString)
+WriteWhite ("PowerShell version detected: " + $psVersionString)
 
 if ($psMajorDetected -ne 2) {
-    Write-Failure "ERROR: This tool expects PowerShell 2.0 (Windows 7 default)."
-    Write-Failure "ERROR: Different PS version detected. Aborting to avoid unsafe behavior."
-    Write-Info ""
-    Write-Prompt "Press any key to exit..."
+    WriteBad "[ERROR]: This tool expects PowerShell 2.0. Aborting."
+    WritePrompt "Press any key to exit..."
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-
-    if ($stagingBlueSelfPath -ne $null -and $stagingBlueSelfPath -ne "") {
-        cmd /c del "$stagingBlueSelfPath" >$null 2>&1
-    }
+    if ($stagingBlueSelfPath -ne $null -and $stagingBlueSelfPath -ne "") { cmd /c del "$stagingBlueSelfPath" >$null 2>&1 }
     exit 1
 }
 
-Write-Success "OK: PowerShell 2.x confirmed."
-Write-Info ""
+WriteGood "PowerShell 2.0 confirmed."
+WriteDone "STEP 1 COMPLETE: POWERSHELL CHECKED"
+WriteWhite ""
 
 # ---------------------------
-# Step 1: Ensure we're running elevated (Admin)
+# STEP 2: ELEVATION CHECK
 # ---------------------------
-Write-Info "INFO: Checking Administrator privileges..."
+WriteWhite "Checking administrative privileges..."
 
 $currentIdentity    = [Security.Principal.WindowsIdentity]::GetCurrent()
 $currentPrincipal   = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
 $currentUserIsAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 if (-not $currentUserIsAdmin) {
-    Write-Prompt "INFO: Not running as Administrator."
-    Write-Prompt "INFO: Relaunching self elevated (UAC) with ExecutionPolicy Bypass..."
-
+    WritePrompt "Not running as administrator - relaunching elevated..."
     $thisScriptPath = $MyInvocation.MyCommand.Path
-    # Pass the script path as an argument so the elevated instance knows where it lives
     $argline = "-NoProfile -ExecutionPolicy Bypass -File `"$thisScriptPath`" `"$thisScriptPath`""
-
     Start-Process powershell.exe -ArgumentList $argline -Verb RunAs
 
-    Write-Info ""
-    Write-Prompt "INFO: Accept the UAC prompt. Elevated window will continue."
-    Write-Prompt "INFO: This non-admin window will now exit (it will attempt to delete itself)."
-    Write-Info ""
-
-    if ($stagingBlueSelfPath -ne $null -and $stagingBlueSelfPath -ne "") {
-        cmd /c del "$stagingBlueSelfPath" >$null 2>&1
-    }
+    WriteNote "Accept the User Account Control (UAC) prompt in the new window."
+    WriteNote "This window will now exit (attempting to delete itself)."
+    if ($stagingBlueSelfPath -ne $null -and $stagingBlueSelfPath -ne "") { cmd /c del "$stagingBlueSelfPath" >$null 2>&1 }
     exit
 }
 
-Write-Success "OK: Running as Administrator."
-Write-Info ""
+WriteGood "Running as administrator."
+WriteDone "STEP 2 COMPLETE: ELEVATION CHECKED"
+WriteWhite ""
 
 # ---------------------------
-# Step 2: Confirm OS is Windows 7 x64
+# STEP 3: OS CHECK
 # ---------------------------
-Write-Info "INFO: Collecting OS details..."
-
+WriteWhite "Collecting operating system (OS) details..."
 $osInfoObject   = Get-WmiObject -Class Win32_OperatingSystem
 $osCaption      = $osInfoObject.Caption
 $osVersion      = $osInfoObject.Version
 $osArchitecture = $osInfoObject.OSArchitecture
 
-Write-Info ("    OS Name:        " + $osCaption)
-Write-Info ("    OS Version:     " + $osVersion)
-Write-Info ("    Architecture:   " + $osArchitecture)
-Write-Info ""
+WriteWhite ("OS: " + $osCaption + "  |  Version: " + $osVersion + "  |  Architecture: " + $osArchitecture)
 
-$hostIsWin7   = $false
-$hostIs64Bit  = $false
-
-if ($osCaption -match "Windows 7") { $hostIsWin7  = $true }
-if ($osArchitecture -match "64")   { $hostIs64Bit = $true }
+$hostIsWin7  = ($osCaption -match "Windows 7")
+$hostIs64Bit = ($osArchitecture -match "64")
 
 if (-not $hostIsWin7) {
-    Write-Failure "ERROR: Host is not Windows 7. StagingBlue only supports Win7 targets."
-    Write-Failure "ERROR: No changes were made."
-    Write-Info ""
-    Write-Prompt "Press any key to exit..."
+    WriteBad "[ERROR]: Host is not Windows 7. Aborting."
+    WritePrompt "Press any key to exit..."
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-
-    if ($stagingBlueSelfPath -ne $null -and $stagingBlueSelfPath -ne "") {
-        cmd /c del "$stagingBlueSelfPath" >$null 2>&1
-    }
+    if ($stagingBlueSelfPath -ne $null -and $stagingBlueSelfPath -ne "") { cmd /c del "$stagingBlueSelfPath" >$null 2>&1 }
     exit 1
 }
-
 if (-not $hostIs64Bit) {
-    Write-Failure "ERROR: Host is not 64-bit Windows 7. No changes made."
-    Write-Info ""
-    Write-Prompt "Press any key to exit..."
+    WriteBad "[ERROR]: Host is not 64-bit. Aborting."
+    WritePrompt "Press any key to exit..."
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-
-    if ($stagingBlueSelfPath -ne $null -and $stagingBlueSelfPath -ne "") {
-        cmd /c del "$stagingBlueSelfPath" >$null 2>&1
-    }
+    if ($stagingBlueSelfPath -ne $null -and $stagingBlueSelfPath -ne "") { cmd /c del "$stagingBlueSelfPath" >$null 2>&1 }
     exit 1
 }
 
-Write-Success "OK: Windows 7 64-bit confirmed."
-Write-Info ""
+WriteGood "Windows 7 64-bit confirmed."
+WriteDone "STEP 3 COMPLETE: OS CHECKED"
+WriteWhite ""
 
 # ---------------------------
-# Step 3: Operator confirmation
+# STEP 4: OPERATOR CONFIRMATION
 # ---------------------------
-Write-Info "StagingBlue will now do the following to this VM:"
-Write-Info " - Ensure SMB (TCP 445) is allowed INBOUND and OUTBOUND so exploitation paths stay reachable."
-Write-Info " - Enable only the built-in Echo Request (ping) rules for IPv4 and IPv6, inbound and outbound."
-Write-Info " - Add 'samr' to NullSessionPipes to weaken anonymous access to SAMR."
-Write-Info ""
-Write-Failure "This WILL make the machine less secure. Do not use this outside a controlled lab VLAN."
-Write-Info ""
-
-$continueAnswer = Read-Host "Type Y to continue, anything else to cancel"
+WriteWhite "Planned actions:"
+WriteNote " - Allow SMB TCP/445 (MS17; In & Out)"
+WriteNote " - Enable Echo Request rules (ICMPv4/ICMPv6; In & Out)"
+WriteNote " - Append 'samr' to NullSessionPipes if missing"
+WriteWhite ""
+WriteBad "THIS WILL WEAKEN THE HOST ☠ DO NOT RUN ON PRODUCTION OR UNTRUSTED NETWORKS"
+WriteWhite ""
+$continueAnswer = Read-Host "Type [Y] to continue, anything else to cancel:"
 if ($continueAnswer -notmatch '^[Yy]') {
-    Write-Info ""
-    Write-Prompt "CANCELLED: You chose not to continue. Nothing was changed."
-    Write-Info ""
-    Write-Prompt "Press any key to exit..."
+    WriteWhite ""
+    WritePrompt "Cancelled - no changes made. Press any key to exit..."
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-
-    if ($stagingBlueSelfPath -ne $null -and $stagingBlueSelfPath -ne "") {
-        cmd /c del "$stagingBlueSelfPath" >$null 2>&1
-    }
+    if ($stagingBlueSelfPath -ne $null -and $stagingBlueSelfPath -ne "") { cmd /c del "$stagingBlueSelfPath" >$null 2>&1 }
     exit 0
 }
 
-Write-Info ""
-Write-Info "Proceeding with StagingBlue victim setup..."
-Write-Info ""
+WriteWhite ""
+WriteWhite "Proceeding..."
+WriteDone "STEP 4 COMPLETE: OPERATOR CONFIRMED"
+WriteWhite ""
 
 # ---------------------------
-# Step 4: Ensure SMB (TCP 445) rules exist
+# STEP 5: ALLOW SMB
 # ---------------------------
-$inboundRuleName   = "MS17 (Eternal Blue) INBOUND"
-$outboundRuleName  = "MS17 (Eternal Blue) OUTBOUND"
-$stagingRuleDesc   = "Allow SMB (TCP 445) for MS17-010 style lab testing. Isolated environment only."
+$inboundRuleName  = "MS17 (Eternal Blue) INBOUND"
+$outboundRuleName = "MS17 (Eternal Blue) OUTBOUND"
+$ruleDescription  = "Allow SMB (TCP 445) for MS17-010 lab testing."
 
-Write-Info "INFO: Checking inbound SMB firewall rule: $inboundRuleName"
-$inboundRuleQueryResult = netsh advfirewall firewall show rule name="$inboundRuleName"
-$inboundRuleExists = $true
-if ($inboundRuleQueryResult -match "No rules match the specified criteria.") {
-    $inboundRuleExists = $false
-}
+WriteWhite "Checking inbound SMB firewall rule: $inboundRuleName..."
+$inboundQuery = netsh advfirewall firewall show rule name="$inboundRuleName" 2>&1
+$inboundExists = -not ($inboundQuery -match "No rules match the specified criteria.")
 
-if ($inboundRuleExists) {
-    Write-Info "NOTE: Inbound SMB rule already exists."
+if ($inboundExists) {
+    WriteWhite "Inbound SMB rule exists."
 } else {
-    Write-Info "ACTION: Creating inbound SMB rule (TCP 445 allow, all profiles)..."
+    WriteWhite "Creating inbound SMB rule..."
     netsh advfirewall firewall add rule `
         name="$inboundRuleName" `
         dir=in `
@@ -203,22 +157,19 @@ if ($inboundRuleExists) {
         localport=445 `
         profile=any `
         enable=yes `
-        description="$stagingRuleDesc" | Out-Null
-    Write-Success "OK: Inbound SMB rule created."
+        description="$ruleDescription" | Out-Null
+    WriteDone "Inbound SMB rule created."
 }
 
-Write-Info ""
-Write-Info "INFO: Checking outbound SMB firewall rule: $outboundRuleName"
-$outboundRuleQueryResult = netsh advfirewall firewall show rule name="$outboundRuleName"
-$outboundRuleExists = $true
-if ($outboundRuleQueryResult -match "No rules match the specified criteria.") {
-    $outboundRuleExists = $false
-}
+WriteWhite ""
+WriteWhite "Checking outbound SMB firewall rule: $outboundRuleName..."
+$outboundQuery = netsh advfirewall firewall show rule name="$outboundRuleName" 2>&1
+$outboundExists = -not ($outboundQuery -match "No rules match the specified criteria.")
 
-if ($outboundRuleExists) {
-    Write-Info "NOTE: Outbound SMB rule already exists."
+if ($outboundExists) {
+    WriteWhite "Outbound SMB rule exists."
 } else {
-    Write-Info "ACTION: Creating outbound SMB rule (TCP 445 allow, all profiles)..."
+    WriteWhite "Creating outbound SMB rule..."
     netsh advfirewall firewall add rule `
         name="$outboundRuleName" `
         dir=out `
@@ -227,346 +178,249 @@ if ($outboundRuleExists) {
         localport=445 `
         profile=any `
         enable=yes `
-        description="$stagingRuleDesc" | Out-Null
-    Write-Success "OK: Outbound SMB rule created."
+        description="$ruleDescription" | Out-Null
+    WriteDone "Outbound SMB rule created."
 }
 
-Write-Info ""
+WriteDone "STEP 5 COMPLETE: SMB ALLOWED"
+WriteWhite ""
 
 # ---------------------------
-# Step 5: Enable Echo Request rules (ICMPv4/v6 In+Out)
+# STEP 6: ENABLE ECHO
 # ---------------------------
-Write-Info "INFO: Auditing and enabling Echo Request rules (ICMPv4 & ICMPv6, inbound & outbound)..."
-Write-Info "INFO: Only these four built-in names are touched. Nothing else."
-Write-Info ""
+WriteWhite "Auditing Echo Request firewall rules..."
 
-$echoTargetRuleNames = @(
+$targetEchoNames = @(
     "File and Printer Sharing (Echo Request - ICMPv4-In)",
     "File and Printer Sharing (Echo Request - ICMPv4-Out)",
     "File and Printer Sharing (Echo Request - ICMPv6-In)",
     "File and Printer Sharing (Echo Request - ICMPv6-Out)"
 )
 
-$tempFirewallDumpPath = $env:TEMP + "\stagingblue_firewall_dump.txt"
-if (Test-Path $tempFirewallDumpPath) { Remove-Item $tempFirewallDumpPath -Force }
-netsh advfirewall firewall show rule name=all > "$tempFirewallDumpPath"
-$firewallDumpLines = Get-Content "$tempFirewallDumpPath"
+$tempDump = $env:TEMP + "\stagingblue_fw_dump.txt"
+if (Test-Path $tempDump) { Remove-Item $tempDump -Force }
+netsh advfirewall firewall show rule name=all > "$tempDump"
+$dumpLines = Get-Content "$tempDump"
 
-$ruleBlocks            = @()
-$currentRuleBlock      = @()
-$currentRuleBlockValid = $false
-
-foreach ($lineRaw in $firewallDumpLines) {
-
-    $lineTrimmed = $lineRaw.Trim()
-    if ($lineTrimmed -eq "") {
-        continue
-    }
-
-    $lineLower = $lineTrimmed.ToLower()
-
-    if ($lineLower.StartsWith("rule name")) {
-        if ($currentRuleBlockValid -eq $true) {
-            $ruleBlocks += ,@($currentRuleBlock)
-        }
-        $currentRuleBlock      = @()
-        $currentRuleBlock     += $lineTrimmed
-        $currentRuleBlockValid = $true
+$blocks = @(); $curr = @(); $have = $false
+foreach ($L in $dumpLines) {
+    $t = $L.Trim()
+    if ($t -eq "") { continue }
+    $low = $t.ToLower()
+    if ($low.StartsWith("rule name")) {
+        if ($have -eq $true) { $blocks += ,@($curr) }
+        $curr = @()
+        $curr += $t
+        $have = $true
     } else {
-        if ($currentRuleBlockValid -eq $true) {
-            $currentRuleBlock += $lineTrimmed
-        }
+        if ($have -eq $true) { $curr += $t }
     }
 }
-if ($currentRuleBlockValid -eq $true) {
-    $ruleBlocks += ,@($currentRuleBlock)
-}
+if ($have -eq $true) { $blocks += ,@($curr) }
 
-$echoRuleReport = @()
-
-foreach ($targetRuleName in $echoTargetRuleNames) {
-
-    $totalInstancesForName    = 0
-    $enabledInstancesForName  = 0
-    $disabledInstancesForName = 0
-
-    foreach ($block in $ruleBlocks) {
-
-        $firstLineOfBlock = $block[0]
-        $partsSplit       = $firstLineOfBlock.Split(":", 2)
-        if ($partsSplit.Length -lt 2) { continue }
-
-        $thisBlockRuleName = $partsSplit[1].Trim()
-
-        if ($thisBlockRuleName -eq $targetRuleName) {
-
-            $totalInstancesForName = $totalInstancesForName + 1
-
-            $thisInstanceEnabled = $false
-            foreach ($blockLine in $block) {
-                $blockLineLower = $blockLine.ToLower()
-                if ($blockLineLower.StartsWith("enabled")) {
-                    $enabledSplit = $blockLine.Split(":", 2)
-                    if ($enabledSplit.Length -ge 2) {
-                        $enabledValue = $enabledSplit[1].Trim().ToLower()
-                        if ($enabledValue -eq "yes") {
-                            $thisInstanceEnabled = $true
-                        }
+$changedCount = 0
+foreach ($target in $targetEchoNames) {
+    $instances = 0; $enabled = 0; $disabled = 0
+    foreach ($blk in $blocks) {
+        $first = $blk[0]; $parts = $first.Split(":",2)
+        if ($parts.Length -lt 2) { continue }
+        $name = $parts[1].Trim()
+        if ($name -eq $target) {
+            $instances = $instances + 1
+            $thisEnabled = $false
+            foreach ($ln in $blk) {
+                if ($ln.ToLower().StartsWith("enabled")) {
+                    $pv = $ln.Split(":",2); if ($pv.Length -ge 2) {
+                        if ($pv[1].Trim().ToLower() -eq "yes") { $thisEnabled = $true }
                     }
                     break
                 }
             }
-
-            if ($thisInstanceEnabled) {
-                $enabledInstancesForName  = $enabledInstancesForName  + 1
-            } else {
-                $disabledInstancesForName = $disabledInstancesForName + 1
-            }
+            if ($thisEnabled) { $enabled = $enabled + 1 } else { $disabled = $disabled + 1 }
         }
     }
 
-    $ruleStatusObject = New-Object PSObject
-    $ruleStatusObject | Add-Member NoteProperty Name                  $targetRuleName
-    $ruleStatusObject | Add-Member NoteProperty TotalInstances        $totalInstancesForName
-    $ruleStatusObject | Add-Member NoteProperty EnabledCount          $enabledInstancesForName
-    $ruleStatusObject | Add-Member NoteProperty DisabledCount         $disabledInstancesForName
-    $echoRuleReport   += $ruleStatusObject
-
-    if ($totalInstancesForName -eq 0) {
-        Write-Info ("NOTE: " + $targetRuleName + " -> no instances found on this system.")
-    } else {
-        Write-Info ("NOTE: " + $targetRuleName + " -> " +
-            $totalInstancesForName.ToString() + " instance(s) found. Enabled: " +
-            $enabledInstancesForName.ToString() + "  Disabled: " +
-            $disabledInstancesForName.ToString())
-    }
-}
-
-$echoRuleNamesWeChanged   = 0
-$echoRuleNamesAlreadyGood = 0
-$echoRuleNamesMissing     = 0
-
-foreach ($ruleStatus in $echoRuleReport) {
-    $thisRuleName   = $ruleStatus.Name
-    $instancesFound = $ruleStatus.TotalInstances
-    $disabledCount  = $ruleStatus.DisabledCount
-
-    if ($instancesFound -eq 0) {
-        $echoRuleNamesMissing = $echoRuleNamesMissing + 1
+    if ($instances -eq 0) {
+        WriteWhite ("[MISSING]: " + $target)
         continue
     }
 
-    if ($disabledCount -eq 0) {
-        Write-Info ("SKIP: All instances already enabled for -> " + $thisRuleName)
-        $echoRuleNamesAlreadyGood = $echoRuleNamesAlreadyGood + 1
+    if ($disabled -eq 0) {
+        WriteWhite ("[ALREADY ENABLED]: " + $target + " (" + $instances + " instances)")
         continue
     }
 
-    Write-Info ("ACTION: Enabling -> " + $thisRuleName + " (enables all profile copies)")
-    $safeDisplayName = $thisRuleName.Replace('"', "'")
-    $enableCmd       = 'netsh advfirewall firewall set rule name="' + $safeDisplayName + '" new enable=yes'
+    WriteWhite ("[ENABLING]: " + $target + "  -> enabling all instances with this name...")
+    $safe = $target.Replace('"', "'")
+    $cmd = 'netsh advfirewall firewall set rule name="' + $safe + '" new enable=yes'
     try {
-        iex $enableCmd
-        Write-Success ("OK: Enabled -> " + $thisRuleName)
-        $echoRuleNamesWeChanged = $echoRuleNamesWeChanged + 1
+        iex $cmd
+        WriteGood ("[ENABLED]: " + $target)
+        $changedCount = $changedCount + 1
     } catch {
-        Write-Failure ("ERROR: Failed to enable -> " + $thisRuleName)
+        WriteBad ("[FAILED TO ENABLE]: " + $target)
     }
 }
 
-if (Test-Path $tempFirewallDumpPath) { Remove-Item $tempFirewallDumpPath -Force }
+if (Test-Path $tempDump) { Remove-Item $tempDump -Force }
 
-Write-Info ""
-Write-Info "INFO: Echo Request firewall step complete."
-Write-Info ""
+WriteDone "STEP 6 COMPLETE: ECHO ENABLED"
+WriteWhite ""
 
 # ---------------------------
-# Step 6: Registry prep (NullSessionPipes -> ensure 'samr')
+# STEP 7: APPEND SAMR
 # ---------------------------
-Write-Info "INFO: Preparing registry (NullSessionPipes -> ensure 'samr' is present)..."
-Write-Info "     HKLM\\SYSTEM\\CurrentControlSet\\services\\LanmanServer\\Parameters\\NullSessionPipes"
-Write-Info ""
+WriteWhite "Checking NullSessionPipes registry value..."
+WriteNote "HKLM\\SYSTEM\\CurrentControlSet\\services\\LanmanServer\\Parameters\\NullSessionPipes"
+$regPath = "HKLM\SYSTEM\CurrentControlSet\services\LanmanServer\Parameters"
+$regName = "NullSessionPipes"
+$need = "samr"
 
-$registryLanmanPath      = "HKLM\SYSTEM\CurrentControlSet\services\LanmanServer\Parameters"
-$registryValueName       = "NullSessionPipes"
-$pipeWeNeed              = "samr"
+$currentList = @(); $hadSamr = $false; $regOk = $false; $addedSamr = $false
 
-$currentPipesOnSystem    = @()
-$registryAlreadyHadSamr  = $false
-$registryWriteWorked     = $false
-$registryWeAddedSamr     = $false
+$raw = cmd /c "reg query `"$regPath`" /v $regName 2>&1"
+$exists = $true
+foreach ($r in $raw) { if ($r -match "ERROR:") { $exists = $false } }
 
-$rawRegistryQuery = cmd /c "reg query `"$registryLanmanPath`" /v $registryValueName 2>&1"
-
-$nullSessionPipesExists = $true
-foreach ($regLine in $rawRegistryQuery) {
-    if ($regLine -match "ERROR:") {
-        $nullSessionPipesExists = $false
-    }
-}
-
-if ($nullSessionPipesExists -eq $true) {
-    foreach ($regLine in $rawRegistryQuery) {
-        $lineTrim = $regLine.Trim()
-        if ($lineTrim -match "^$registryValueName") {
-            $pieces = $lineTrim -split "\s{2,}"
-            if ($pieces.Length -ge 3) {
-                $dataJoined = $pieces[2]
-                $currentPipesOnSystem = $dataJoined -split "\\0"
+if ($exists) {
+    foreach ($r in $raw) {
+        $t = $r.Trim()
+        if ($t -match "^$regName") {
+            $parts = $t -split "\s{2,}"
+            if ($parts.Length -ge 3) {
+                $data = $parts[2]
+                $currentList = $data -split "\\0"
             }
         }
     }
 } else {
-    Write-Info "NOTE: NullSessionPipes currently not defined (no entries)."
+    WriteNote "No NullSessionPipes defined: empty list assumed."
 }
 
-$cleanList = @()
-foreach ($entry in $currentPipesOnSystem) {
-    if ($entry -ne $null -and $entry.Trim() -ne "") {
-        $cleanList += $entry.Trim()
-    }
+$clean = @()
+foreach ($e in $currentList) {
+    if ($e -ne $null -and $e.Trim() -ne "") { $clean += $e.Trim() }
 }
-$currentPipesOnSystem = $cleanList
+$currentList = $clean
 
-if ($currentPipesOnSystem.Count -eq 0) {
-    Write-Info "Current NullSessionPipes entries: (none)"
+if ($currentList.Count -gt 0) {
+    WriteWhite "Current NullSessionPipes:"
+    foreach ($x in $currentList) { WriteWhite (" - " + $x) }
 } else {
-    Write-Info "Current NullSessionPipes entries:"
-    foreach ($pipeEntry in $currentPipesOnSystem) {
-        Write-Info ("  - " + $pipeEntry)
-    }
+    WriteWhite "Current NullSessionPipes: no records present."
 }
 
-foreach ($pipeEntry in $currentPipesOnSystem) {
-    if ($pipeEntry.ToLower() -eq $pipeWeNeed.ToLower()) {
-        $registryAlreadyHadSamr = $true
-    }
-}
+foreach ($x in $currentList) { if ($x.ToLower() -eq $need.ToLower()) { $hadSamr = $true } }
 
-if ($registryAlreadyHadSamr) {
-    Write-Info "SKIP: 'samr' already present. Registry not modified."
-    $registryWriteWorked = $true
-    $registryWeAddedSamr = $false
+if ($hadSamr) {
+    WriteGood "'samr' already present. Aborting."
+    $regOk = $true
 } else {
-    Write-Info "ACTION: Adding 'samr' to NullSessionPipes..."
+    WriteWhite "Adding 'samr' to NullSessionPipes..."
+    $newList = @(); foreach ($x in $currentList) { $newList += $x }; $newList += $need
+    $multi = ""
+    for ($i=0; $i -lt $newList.Count; $i++) {
+        if ($i -gt 0) { $multi = $multi + "\0" }
+        $multi = $multi + $newList[$i]
+    }
+    $multi = $multi + "\0"
+    $cmdline = "reg add `"$regPath`" /v $regName /t REG_MULTI_SZ /d `"$multi`" /f"
+    $out = cmd /c $cmdline
+    $ok = $false
+    foreach ($o in $out) { if ($o -match "successfully") { $ok = $true } }
+    if ($ok) {
+        WriteGood "'samr' appended to NullSessionPipes."
+        WriteDone "STEP 7 COMPLETE: APPENDED SAMR"
+        $regOk = $true; $addedSamr = $true
+    } else {
+        WriteBad "[ERROR]: Failed to add 'samr' to registry."
+        $regOk = $false
+    }
+}
 
-    $updatedPipeList = @()
-    foreach ($pipeEntry in $currentPipesOnSystem) { $updatedPipeList += $pipeEntry }
-    $updatedPipeList += $pipeWeNeed
+WriteWhite ""
 
-    $regMultiString = ""
-    for ($i = 0; $i -lt $updatedPipeList.Count; $i++) {
-        if ($i -gt 0) {
-            $regMultiString = $regMultiString + "\0"
+# ---------------------------
+# STEP 8: PRINT SUMMARY
+# ---------------------------
+WriteWhite "==================== STAGINGBLUE 1.0 SUMMARY ===================="
+WriteWhite ("PS Version : " + $psVersionString)
+WriteWhite ("OS Version : " + $osCaption + "  |  " + $osArchitecture)
+if ($inboundExists) { WriteWhite ("SMB Inbound : exists") } else { WriteWhite ("SMB INBOUND : created") }
+if ($outboundExists) { WriteWhite ("SMB Outbound: exists") } else { WriteWhite ("SMB OUTBOUND: created") }
+
+if ($regOk -and $addedSamr) { WriteWhite "Registry: 'samr' was added." }
+elseif ($regOk) { WriteWhite "Registry: 'samr' already present." }
+else { WriteWhite "Registry: modification failed or not attempted." }
+
+WriteWhite ""
+WriteWhite "---------- NETWORK INFO ----------"
+
+try {
+    $adapters = Get-WmiObject -Class Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -eq $true }
+} catch {
+    $adapters = @()
+}
+
+if ($adapters.Length -eq 0) {
+    WriteNote "No IP-enabled adapters found."
+} else {
+    $hostname = $env:COMPUTERNAME
+    foreach ($nic in $adapters) {
+        WriteWhite ("Adapter: " + ($nic.Description -replace "`r`n"," "))
+        WriteWhite ("Host Name: " + $hostname)
+
+        # separate IPv4 vs IPv6
+        $ipv4s = @(); $ipv6s = @()
+        if ($nic.IPAddress) {
+            foreach ($ip in $nic.IPAddress) {
+                if ($ip -match "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$") { $ipv4s += $ip } else { $ipv6s += $ip }
+            }
         }
-        $regMultiString = $regMultiString + $updatedPipeList[$i]
-    }
-    $regMultiString = $regMultiString + "\0"
 
-    $regAddCommand = "reg add `"$registryLanmanPath`" /v $registryValueName /t REG_MULTI_SZ /d `"$regMultiString`" /f"
-    $regAddOutput  = cmd /c $regAddCommand
-
-    $writeLookedOK = $false
-    foreach ($outLine in $regAddOutput) {
-        if ($outLine -match "successfully") { $writeLookedOK = $true }
-    }
-
-    if ($writeLookedOK) {
-        Write-Success "OK: 'samr' appended to NullSessionPipes."
-        $registryWriteWorked = $true
-        $registryWeAddedSamr = $true
-    } else {
-        Write-Failure "ERROR: Registry write did not confirm success."
-        $registryWriteWorked = $false
-        $registryWeAddedSamr = $false
-    }
-}
-
-Write-Info ""
-Write-Info "Registry prep complete."
-Write-Info ""
-
-# ---------------------------
-# Step 7: Final summary + IP info
-# ---------------------------
-$inboundRuleStatus  = ""
-$outboundRuleStatus = ""
-if ($inboundRuleExists)  { $inboundRuleStatus  = "(pre-existing)" } else { $inboundRuleStatus  = "(created now)" }
-if ($outboundRuleExists) { $outboundRuleStatus = "(pre-existing)" } else { $outboundRuleStatus = "(created now)" }
-
-Write-Info "==================== STAGINGBLUE SUMMARY ===================="
-Write-Info ("PowerShell version : " + $psVersionString)
-Write-Info ("OS Name            : " + $osCaption)
-Write-Info ("OS Version         : " + $osVersion)
-Write-Info ("Architecture       : " + $osArchitecture)
-Write-Info ""
-Write-Info ("SMB inbound rule   : " + $inboundRuleName  + "  " + $inboundRuleStatus)
-Write-Info ("SMB outbound rule  : " + $outboundRuleName + "  " + $outboundRuleStatus)
-Write-Info ""
-Write-Info "Echo Request rule targets processed (4 total):"
-foreach ($ruleStatus in $echoRuleReport) {
-    $summaryLine  = "  - " + $ruleStatus.Name
-    $summaryLine += " | Instances: " + $ruleStatus.TotalInstances.ToString()
-    $summaryLine += " | Enabled: "   + $ruleStatus.EnabledCount.ToString()
-    $summaryLine += " | Disabled: "  + $ruleStatus.DisabledCount.ToString()
-    Write-Info $summaryLine
-}
-Write-Info ""
-Write-Info ("Echo rule names we had to touch     : " + $echoRuleNamesWeChanged.ToString())
-Write-Info ("Echo rule names already good        : " + $echoRuleNamesAlreadyGood.ToString())
-Write-Info ("Echo rule names missing on this box : " + $echoRuleNamesMissing.ToString())
-Write-Info ""
-if ($registryWriteWorked) {
-    if ($registryAlreadyHadSamr) {
-        Write-Info "Registry NullSessionPipes: 'samr' was already present (no change)."
-    } else {
-        if ($registryWeAddedSamr) {
-            Write-Success "Registry NullSessionPipes: 'samr' was added."
+        if ($ipv4s.Count -gt 0) {
+            # highlight IPv4 in YELLOW (closest to orange)
+            WritePrompt ("IPv4 Address(es) : " + ($ipv4s -join ", "))
         } else {
-            Write-Failure "Registry NullSessionPipes: tried to add 'samr' but write failed."
+            WriteWhite "IPv4 Address(es) : (none)"
         }
-    }
-} else {
-    Write-Failure "Registry NullSessionPipes: could not be modified."
-}
-Write-Info ""
-Write-Info "WARNING:"
-Write-Failure " - SMB (TCP 445) is now allowed inbound and outbound on all profiles."
-Write-Info " - Ping echo (ICMPv4 + ICMPv6, inbound + outbound) is enabled so the victim is easier to find."
-Write-Info " - NullSessionPipes now includes 'samr' (or already had it)."
-Write-Info ""
-Write-Info "This host is now staged as a soft victim for MS17-010 style exploitation."
-Write-Info "Do NOT bridge this VM onto anything you don't fully control."
-Write-Info "=============================================================="
-Write-Info ""
 
-Write-Info "---------- NETWORK INFO (ipconfig /all) ----------"
-cmd /c ipconfig /all
-Write-Info "--------------------------------------------------"
-Write-Info ""
+        if ($ipv6s.Count -gt 0) {
+            WriteWhite ("IPv6 Address(es) : " + ($ipv6s -join ", "))
+        } else {
+            WriteWhite "IPv6 Address(es) : (none)"
+        }
+
+        if ($nic.MACAddress) { WriteWhite ("Physical Address : " + $nic.MACAddress) } else { WriteWhite "Physical address : (none)" }
+
+        if ($nic.IPSubnet) { WriteWhite ("Subnet(s)        : " + ($nic.IPSubnet -join ", ")) } else { WriteWhite "Subnet(s)        : (none)" }
+
+        if ($nic.DefaultIPGateway) { WriteWhite ("Gateway(s)       : " + ($nic.DefaultIPGateway -join ", ")) } else { WriteWhite "Gateway(s)       : (none)" }
+
+        if ($nic.DHCPServer) { WriteWhite ("DHCP Server      : " + $nic.DHCPServer) } else { WriteWhite "DHCP server      : (none)" }
+
+        WriteWhite "------------------------------------------------------"
+    }
+}
+WriteWhite "------------------------------------------------------"
+WriteWhite ""
 
 # ---------------------------
-# Step 8: Reboot prompt / exit with cleanup & self-delete
+# FINAL: Reboot prompt, cleanup & self-delete
 # ---------------------------
 $rebootAnswer = Read-Host "Reboot now to lock in changes? (Y/N)"
 if ($rebootAnswer -match '^[Yy]') {
-    Write-Info "INFO: Rebooting now..."
-
-    if ($stagingBlueSelfPath -ne $null -and $stagingBlueSelfPath -ne "") {
-        cmd /c del "$stagingBlueSelfPath" >$null 2>&1
-    }
-
+    WriteWhite "REBOOTING NOW..."
+    if ($stagingBlueSelfPath -ne $null -and $stagingBlueSelfPath -ne "") { cmd /c del "$stagingBlueSelfPath" >$null 2>&1 }
     shutdown /r /t 0
     exit 0
 }
 
-Write-Info ""
-Write-Success "StagingBlue finished. A reboot is still recommended."
-Write-Prompt "This window will now close. Press any key to exit."
-
+WriteGood "STAGING COMPLETE - REBOOT RECOMMENDED"
+WritePrompt "Press any key to exit (this window will close)..."
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
-# final cleanup - try to delete the temp ps1 before we exit
+# cleanup if path provided
 if ($stagingBlueSelfPath -ne $null -and $stagingBlueSelfPath -ne "") {
     cmd /c del "$stagingBlueSelfPath" >$null 2>&1
 }
