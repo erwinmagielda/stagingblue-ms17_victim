@@ -240,7 +240,7 @@ if ($hadSamr) {
 WriteWhite ""
 
 # ---------------------------
-# STEP 8: SUMMARY + NETWORK (selected)
+# STEP 8: SUMMARY REPORT
 # ---------------------------
 WriteWhite "==================== STAGINGBLUE SUMMARY ===================="
 WriteWhite ("PS Version : " + $psVersionString)
@@ -288,7 +288,7 @@ WriteWhite "------------------------------------------------------"
 WriteWhite ""
 
 # ---------------------------
-# FINAL: Reboot Prompt
+# FINAL: REBOOT PROMPT
 # ---------------------------
 WriteGood "[OK] Staging complete."
 $rebootAnswer = Read-Host "Reboot now to lock in changes? [Y/N]"
