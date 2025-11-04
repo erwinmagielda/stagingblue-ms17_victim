@@ -22,7 +22,6 @@ WriteWhite ""
 # STEP 1: POWERSHELL CHECK
 # ---------------------------
 WriteWhite "Checking PowerShell version..."
-WriteWhite ""
 $psMajorDetected = 2
 $psMinorDetected = 0
 if ($PSVersionTable -and $PSVersionTable.PSVersion) {
@@ -30,7 +29,6 @@ if ($PSVersionTable -and $PSVersionTable.PSVersion) {
     $psMinorDetected = $PSVersionTable.PSVersion.Minor
 }
 $psVersionString = $psMajorDetected.ToString() + "." + $psMinorDetected.ToString()
-WriteWhite ("PowerShell version detected: " + $psVersionString)
 
 if ($psMajorDetected -ne 2) {
     WriteBad "This tool expects PowerShell 2.0. Aborting."
@@ -292,6 +290,7 @@ WriteWhite ""
 # ---------------------------
 # FINAL: Reboot Prompt
 # ---------------------------
+WriteGood "[OK] Staging complete."
 $rebootAnswer = Read-Host "Reboot now to lock in changes? [Y/N]"
 if ($rebootAnswer -match '^[Yy]') {
     WritePrompt "Rebooting now..."
@@ -299,7 +298,6 @@ if ($rebootAnswer -match '^[Yy]') {
     exit 0
 }
 
-WriteGood "[OK] Staging complete."
 WritePrompt "Press any key to exit (this window will close)..."
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 exit 0
