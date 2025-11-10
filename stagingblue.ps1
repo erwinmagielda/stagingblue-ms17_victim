@@ -7,11 +7,11 @@ Author: Erwin Magielda (https://www.erwinmagielda.com)
 # Colour Helpers
 # ---------------------------
 function WriteWhite([string]$t)   { Write-Host $t -ForegroundColor White }
-function WriteGood([string]$t)    { Write-Host ("[SUCCESS] " + $t) -ForegroundColor Green }
-function WriteBad([string]$t)     { Write-Host ("[ERROR]   " + $t) -ForegroundColor Red }
+function WriteGood([string]$t)    { Write-Host $t -ForegroundColor Green }
+function WriteBad([string]$t)     { Write-Host $t -ForegroundColor Red }
 function WritePrompt([string]$t)  { Write-Host $t -ForegroundColor Yellow }
-function WriteDone([string]$t)    { Write-Host $t -ForegroundColor Magenta }   # pink (completed steps / major actions)
-function WriteNote([string]$t)    { Write-Host $t -ForegroundColor Cyan }      # teal (rare guidance lines)
+function WriteDone([string]$t)    { Write-Host $t -ForegroundColor Magenta }   
+function WriteNote([string]$t)    { Write-Host $t -ForegroundColor Cyan }      
 
 WriteWhite "======================================================"
 WriteWhite " StagingBlue :: MS17-010 Victim Prep (Win7 x64 / PS2) "
@@ -36,7 +36,7 @@ if ($psMajorDetected -ne 2) {
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 1
 }
-WriteGood "[OK] PowerShell 2.0 confirmed."
+WriteGood "PowerShell 2.0 confirmed."
 WriteDone "STEP 1 COMPLETE: POWERSHELL CHECKED"
 WriteWhite ""
 
@@ -53,10 +53,10 @@ if (-not $currentUserIsAdmin) {
     $thisScriptPath = $MyInvocation.MyCommand.Path
     $argline = "-NoProfile -ExecutionPolicy Bypass -File `"$thisScriptPath`""
     Start-Process powershell.exe -ArgumentList $argline -Verb RunAs
-    WriteNote "Accept the User Account Control (UAC) prompt in the new window. This window will now close."
+    WriteNote "Accept the UAC prompt in the new window. This window will now close."
     exit
 }
-WriteGood "[OK] Administrator privileges confirmed."
+WriteGood "Administrator privileges confirmed."
 WriteDone "STEP 2 COMPLETE: ELEVATION CHECKED"
 WriteWhite ""
 
@@ -74,18 +74,18 @@ $hostIsWin7  = ($osCaption -match "Windows 7")
 $hostIs64Bit = ($osArchitecture -match "64")
 
 if (-not $hostIsWin7) {
-    WriteBad "[ERROR] Host is not Windows 7. Aborting."
+    WriteBad "Host is not Windows 7. Aborting."
     WritePrompt "Press any key to exit..."
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 1
 }
 if (-not $hostIs64Bit) {
-    WriteBad "[ERROR] Host is not 64-bit. Aborting."
+    WriteBad "Host is not 64-bit. Aborting."
     WritePrompt "Press any key to exit..."
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 1
 }
-WriteGood "[OK] Windows 7 64-bit confirmed."
+WriteGood "Windows 7 64-bit confirmed."
 WriteDone "STEP 3 COMPLETE: OS CHECKED"
 WriteWhite ""
 
@@ -97,7 +97,7 @@ WriteNote " - Enable SMB TCP/445 rules (MS17; In & Out)"
 WriteNote " - Enable Echo Request rules (ICMPv4/ICMPv6; In & Out)"
 WriteNote " - Append 'samr' to NullSessionPipes if missing"
 WriteWhite ""
-WriteBad "THIS WILL WEAKEN THE HOST - USE ONLY IN LAB ENVIRONMENTS"
+WriteBad "THIS WILL WEAKEN THE HOST | USE ONLY IN LAB ENVIRONMENTS"
 WriteWhite ""
 $continueAnswer = Read-Host "Proceed? [Y/N]"
 if ($continueAnswer -notmatch '^[Yy]') {
@@ -123,7 +123,7 @@ if ($inboundExists) {
 } else {
     WriteWhite "Creating inbound SMB rule..."
     netsh advfirewall firewall add rule name="$inboundRuleName" dir=in action=allow protocol=TCP localport=445 profile=any enable=yes description="$ruleDescription" | Out-Null
-    WriteDone "[OK] Inbound SMB rule created."
+    WriteDone "Inbound SMB rule created."
 }
 
 WriteWhite "Checking outbound SMB firewall rule..."
@@ -134,7 +134,7 @@ if ($outboundExists) {
 } else {
     WriteWhite "Creating outbound SMB rule..."
     netsh advfirewall firewall add rule name="$outboundRuleName" dir=out action=allow protocol=TCP localport=445 profile=any enable=yes description="$ruleDescription" | Out-Null
-    WriteDone "[OK] Outbound SMB rule created."
+    WriteDone "Outbound SMB rule created."
 }
 WriteDone "STEP 5 COMPLETE: SMB ALLOWED"
 WriteWhite ""
@@ -158,20 +158,20 @@ foreach ($t in $echoTargets) {
     $exists = -not ($chk -match "No rules match the specified criteria.")
 
     if ($exists) {
-        WriteWhite ("Rule exists -> " + $n)
+        WriteWhite ("[RULE EXISTS]:" + $n)
     } else {
-        WriteWhite ("Creating rule -> " + $n)
+        WriteWhite ("[CREATING RULE]:" + $n)
         netsh advfirewall firewall add rule name="$n" dir=$d action=allow protocol=$p profile=any enable=yes | Out-Null
-        WriteDone ("CREATED -> " + $n)
+        WriteDone ("[CREATED]:" + $n)
     }
 
     $safe = $n.Replace('"', "'")
     $cmd  = 'netsh advfirewall firewall set rule name="' + $safe + '" new enable=yes'
     try {
         iex $cmd
-        WriteGood ("ENABLED -> " + $n)
+        WriteGood ("[ENABLED]:" + $n)
     } catch {
-        WriteBad  ("Failed to enable -> " + $n)
+        WriteBad  ("[FAILED TO ENABLE]:" + $n)
     }
 }
 WriteDone "STEP 6 COMPLETE: ALLOWED ECHO"
@@ -207,22 +207,19 @@ if ($exists) {
     WriteNote "No NullSessionPipes value present. Creating."
 }
 
-# sanitise
 $clean = @()
 foreach ($e in $current) { if ($e -ne $null -and $e.Trim() -ne "") { $clean += $e.Trim() } }
 $current = $clean
 
-# already?
 foreach ($e in $current) { if ($e.ToLower() -eq $need.ToLower()) { $hadSamr = $true } }
 
 if ($hadSamr) {
-    WriteGood "[OK] Value already present."
+    WriteGood "Value already present."
     $regOK = $true
 } else {
     WriteWhite "Appending 'samr' to NullSessionPipes..."
     $newList = @(); foreach ($e in $current) { $newList += $e }; $newList += $need
 
-    # join as REG_MULTI_SZ with \0 separators and trailing \0
     $multi = ""
     for ($i=0; $i -lt $newList.Count; $i++) {
         if ($i -gt 0) { $multi = $multi + "\0" }
@@ -234,8 +231,8 @@ if ($hadSamr) {
     $out = cmd /c $cmdline
     $ok = $false
     foreach ($o in $out) { if ($o -match "successfully") { $ok = $true } }
-    if ($ok) { WriteGood "[OK] Value added."; WriteDone "STEP 7 COMPLETE: MODIFIED REGISTRY"; $regOK=$true; $added=$true }
-    else     { WriteBad  "[ERROR] Registry write failed."; $regOK=$false }
+    if ($ok) { WriteGood "Value added."; WriteDone "STEP 7 COMPLETE: MODIFIED REGISTRY"; $regOK=$true; $added=$true }
+    else     { WriteBad  "Registry write failed."; $regOK=$false }
 }
 WriteWhite ""
 
@@ -298,6 +295,6 @@ if ($rebootAnswer -match '^[Yy]') {
     exit 0
 }
 
-WritePrompt "Press any key to exit (this window will close)..."
+WritePrompt "Press any key to exit..."
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 exit 0
